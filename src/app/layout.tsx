@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Ren'Py Work — 本地文本编辑器",
-  description: "通用 Ren'Py 工程源文检视与编辑（本地优先）",
+  title: "Ren'Py Work",
+  description: "通用 Ren'Py 工程：脚本编辑与资源浏览（本地优先）",
 };
 
 export default function RootLayout({

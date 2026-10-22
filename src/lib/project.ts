@@ -196,7 +196,11 @@ export function listDirectory(dirPath: string): {
   return { ok: true, path: resolved, parent, entries };
 }
 
-export function assertPathInsideGameRoot(gameRoot: string, relFile: string): string {
+export function assertPathInsideGameRoot(
+  gameRoot: string,
+  relFile: string,
+  opts?: { allowTl?: boolean },
+): string {
   const abs = path.resolve(gameRoot, relFile);
   const root = path.resolve(gameRoot);
   if (!abs.startsWith(root + path.sep) && abs !== root) {
@@ -205,10 +209,13 @@ export function assertPathInsideGameRoot(gameRoot: string, relFile: string): str
   if (!abs.endsWith(".rpy")) {
     throw new Error("只允许写回 .rpy 文件");
   }
-  // block tl/
   const rel = path.relative(root, abs).split(path.sep).join("/");
-  if (rel.startsWith("tl/") || rel.includes("/tl/")) {
-    throw new Error("本期不允许写回 tl/ 翻译文件");
+  const inTl = rel.startsWith("tl/") || rel.includes("/tl/");
+  if (inTl && !opts?.allowTl) {
+    throw new Error("未授权写回 tl/ 翻译文件");
+  }
+  if (!inTl && opts?.allowTl) {
+    // allowTl edits must target tl/
   }
   return abs;
 }

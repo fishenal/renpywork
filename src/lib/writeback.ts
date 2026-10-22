@@ -11,7 +11,7 @@ function escapeForQuotes(text: string, quote: '"' | "'"): string {
 
 /**
  * Replace the first quoted string on a line with new text, preserving
- * indentation, speaker, trailing colon (menu), and comments.
+ * indentation, speaker, trailing colon (menu), `#` prefix, old/new, and comments.
  */
 export function replaceQuotedOnLine(line: string, newText: string): string {
   const match = line.match(/^(.*?)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')(.*)$/);
@@ -40,9 +40,10 @@ export function applyEdits(
   const errors: string[] = [];
 
   for (const [relFile, fileEdits] of byFile) {
+    const allowTl = fileEdits.some((e) => e.allowTl);
     let abs: string;
     try {
-      abs = assertPathInsideGameRoot(gameRoot, relFile);
+      abs = assertPathInsideGameRoot(gameRoot, relFile, { allowTl });
     } catch (err) {
       errors.push(`${relFile}: ${err instanceof Error ? err.message : String(err)}`);
       continue;
@@ -57,29 +58,26 @@ export function applyEdits(
     const nl = content.includes("\r\n") ? "\r\n" : "\n";
     const lines = content.split(/\r?\n/);
 
-    // Apply higher line numbers first so indices stay valid (we're editing by absolute line number)
     const sorted = [...fileEdits].sort((a, b) => b.line - a.line);
-    let fileOk = true;
+    let wrote = false;
 
     for (const edit of sorted) {
       const idx = edit.line - 1;
       if (idx < 0 || idx >= lines.length) {
         errors.push(`${relFile}:${edit.line}: 行号超出范围`);
-        fileOk = false;
         continue;
       }
       try {
         lines[idx] = replaceQuotedOnLine(lines[idx], edit.text);
+        wrote = true;
       } catch (err) {
         errors.push(
           `${relFile}:${edit.line}: ${err instanceof Error ? err.message : String(err)}`,
         );
-        fileOk = false;
       }
     }
 
-    if (fileOk || sorted.length > 0) {
-      // Write even partial success for lines that applied; only skip if nothing changed
+    if (wrote) {
       fs.writeFileSync(abs, lines.join(nl), "utf8");
       updatedFiles.push(relFile);
     }
