@@ -4,15 +4,36 @@ export type ProjectSession = {
   displayName: string;
 };
 
+export type DialogueLineKind =
+  | "say"
+  | "menu_caption"
+  | "if"
+  | "elif"
+  | "else"
+  | "scene"
+  | "show"
+  | "hide"
+  | "play_music"
+  | "play_sound"
+  | "play_ambient"
+  | "py_call";
+
 export type DialogueLine = {
   id: string;
   file: string;
   line: number;
   speaker: string | null;
+  /** Dialogue text, if/elif condition, show/play arg, or py_call args */
   text: string;
-  kind: "say" | "menu_caption";
+  kind: DialogueLineKind;
   /** Label that owns this line, if any */
   label: string | null;
+  /** Nesting depth inside if/elif/else (0 = top-level) */
+  branchDepth: number;
+  /** For kind py_call: function / method name (e.g. team_talk) */
+  callName: string | null;
+  /** For kind py_call: raw argument list inside (...) */
+  callArgs: string | null;
   /** English body from tl/, if paired */
   textEn: string | null;
   /** tl file relative to game/ */

@@ -402,6 +402,179 @@ button {
   color: #7a5a10;
 }
 
+.line-meta-actions {
+  margin-left: auto;
+}
+
+.branch-card {
+  background: #f3f0ea;
+  border-style: dashed;
+  padding: 0.55rem 0.85rem;
+}
+
+.branch-card .line-meta {
+  margin-bottom: 0.25rem;
+}
+
+.branch-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  letter-spacing: 0.04em;
+}
+
+.branch-pill-if {
+  background: #d8e8e2;
+  color: #1f4d40;
+}
+
+.branch-pill-elif {
+  background: #e4e0f0;
+  color: #3d3560;
+}
+
+.branch-pill-else {
+  background: #ebe4d6;
+  color: #5c4a2e;
+}
+
+.branch-condition {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--ink);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.branch-depth-badge {
+  background: #e8e4f2;
+  color: #4a3f6b;
+}
+
+.media-card {
+  border-style: solid;
+  padding: 0.5rem 0.85rem;
+}
+
+.media-card .line-meta {
+  margin-bottom: 0.2rem;
+}
+
+.media-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-family: var(--mono);
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  letter-spacing: 0.02em;
+}
+
+.media-symbol {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.media-statement {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.media-scene {
+  background: #eef2f8;
+  border-color: #c5d0e0;
+}
+.media-pill-scene {
+  background: #d4e0f0;
+  color: #2a4060;
+}
+
+.media-show {
+  background: #f3eef8;
+  border-color: #d2c6e0;
+}
+.media-pill-show {
+  background: #e4d8f2;
+  color: #4a3568;
+}
+
+.media-hide {
+  background: #f2f0f0;
+  border-color: #d8d2d2;
+}
+.media-pill-hide {
+  background: #e0dcdc;
+  color: #555;
+}
+
+.media-play_music {
+  background: #eef7f1;
+  border-color: #c5ddd0;
+}
+.media-pill-play_music {
+  background: #d0ebe0;
+  color: #1f5a40;
+}
+
+.media-play_sound {
+  background: #f8f4ec;
+  border-color: #e0d4bc;
+}
+.media-pill-play_sound {
+  background: #f0e4c8;
+  color: #6a4e1e;
+}
+
+.media-play_ambient {
+  background: #eef6f7;
+  border-color: #c4dbe0;
+}
+.media-pill-play_ambient {
+  background: #d0e8ec;
+  color: #2a555c;
+}
+
+.media-py_call {
+  background: #f7f3ea;
+  border-color: #ddd0b8;
+}
+
+.media-pill-py_call {
+  background: #ebe0c8;
+  color: #5a4820;
+}
+
+.py-call-name {
+  color: #2f5d50;
+  font-weight: 700;
+}
+
+.py-call-paren {
+  color: var(--muted);
+}
+
+.py-call-args {
+  color: #4a3f2e;
+}
+
+.fetch-msg {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+}
+
+.en-panel {
+  margin-top: 0.55rem;
+}
+
 .bilingual {
   display: grid;
   grid-template-columns: 1fr 1fr;

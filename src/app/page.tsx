@@ -46,7 +46,14 @@ export default function HomePage() {
   const [graphCollapsed, setGraphCollapsed] = useState(false);
   const [graphHeight, setGraphHeight] = useState(GRAPH_HEIGHT_DEFAULT);
   const leftPaneRef = useRef<HTMLElement | null>(null);
+  const rightPaneRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  useEffect(() => {
+    if (rightPaneRef.current) {
+      rightPaneRef.current.scrollTop = 0;
+    }
+  }, [selectedFile]);
 
   useEffect(() => {
     try {
@@ -458,10 +465,10 @@ export default function HomePage() {
               />
             </section>
           </aside>
-          <main className="right-pane">
+          <main className="right-pane" ref={rightPaneRef}>
             <div className="right-toolbar muted">
               {index
-                ? `${index.files.length} 文件 · ${index.lines.length} 行 · 英对照 ${index.tlPairedCount}`
+                ? `${index.files.length} 文件 · ${index.lines.length} 行 · 可英译 ${index.tlPairedCount}`
                 : "尚未扫描"}
               {dirtyCount > 0 ? ` · ${dirtyCount} 未保存` : ""}
             </div>

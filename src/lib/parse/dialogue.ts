@@ -20,6 +20,55 @@ const LABEL_RE = /^label\s+([A-Za-z_][\w.]*)\s*:/;
 const JUMP_LITERAL = /^(?:jump|call)\s+([A-Za-z_][\w.]*)\b/;
 const JUMP_EXPR = /^(?:jump|call)\s+expression\b/;
 const CALL_SCREEN = /^call\s+screen\b/;
+const IF_ELIF_RE = /^(if|elif)\s+(.+?)\s*:\s*(?:#.*)?$/;
+const ELSE_RE = /^else\s*:\s*(?:#.*)?$/;
+const SCENE_RE = /^scene\s+(.+?)\s*(?:#.*)?$/;
+const SHOW_RE = /^show\s+(.+?)\s*(?:#.*)?$/;
+const HIDE_RE = /^hide\s+(.+?)\s*(?:#.*)?$/;
+const PLAY_RE = /^play\s+(music|sound|ambient)\s+(.+?)\s*(?:#.*)?$/;
+/** `$ name(...)` — generic one-liner Python call (not assignment) */
+const DOLLAR_CALL_HEAD = /^\$\s*([A-Za-z_][\w.]*)\s*\(/;
+
+function extractCallArgs(afterOpenParen: string): string | null {
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  let escape = false;
+  for (let i = 0; i < afterOpenParen.length; i++) {
+    const ch = afterOpenParen[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\" && (inSingle || inDouble)) {
+      escape = true;
+      continue;
+    }
+    if (!inDouble && ch === "'" && !inSingle) {
+      inSingle = true;
+      continue;
+    }
+    if (inSingle && ch === "'") {
+      inSingle = false;
+      continue;
+    }
+    if (!inSingle && ch === '"' && !inDouble) {
+      inDouble = true;
+      continue;
+    }
+    if (inDouble && ch === '"') {
+      inDouble = false;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return afterOpenParen.slice(0, i).trim();
+    }
+  }
+  return null;
+}
 
 const KEYWORDS = new Set([
   "label",
@@ -211,6 +260,8 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
   let screenIndent = -1;
   let inSkipBlock = false;
   let skipIndent = -1;
+  /** Open if/elif/else headers by indent (outer → inner) */
+  const branchStack: number[] = [];
 
   for (let i = 0; i < rawLines.length; i++) {
     const raw = rawLines[i];
@@ -277,10 +328,51 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
       });
       inMenu = false;
       menuCaption = null;
+      branchStack.length = 0;
       continue;
     }
 
-    if (trimmed.startsWith("$")) continue;
+    // Generic `$ method(...)` — show name + args; skip assignments like `$ x = 1`
+    if (trimmed.startsWith("$")) {
+      const head = trimmed.match(DOLLAR_CALL_HEAD);
+      if (head) {
+        const name = head[1];
+        const after = trimmed.slice(head[0].length);
+        const args = extractCallArgs(after);
+        if (args !== null) {
+          // branch stack may still apply for indent context
+          while (
+            branchStack.length > 0 &&
+            indent < branchStack[branchStack.length - 1]
+          ) {
+            branchStack.pop();
+          }
+          lines.push(
+            emptyTlFields({
+              id: `${relFile}:${lineNo}`,
+              file: relFile,
+              line: lineNo,
+              speaker: null,
+              text: args,
+              kind: "py_call",
+              label: currentLabel,
+              branchDepth: branchStack.length,
+              callName: name,
+              callArgs: args,
+            }),
+          );
+        }
+      }
+      continue;
+    }
+
+    // Close finished if-blocks when indent goes back out
+    while (
+      branchStack.length > 0 &&
+      indent < branchStack[branchStack.length - 1]
+    ) {
+      branchStack.pop();
+    }
 
     if (/^menu\s*:/.test(trimmed)) {
       inMenu = true;
@@ -294,6 +386,119 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
         inMenu = false;
         menuCaption = null;
       }
+    }
+
+    // if / elif / else markers (story script only; screens/python already skipped)
+    const ifElif = trimmed.match(IF_ELIF_RE);
+    const isElse = ELSE_RE.test(trimmed);
+    if (ifElif || isElse) {
+      const kind = (ifElif ? ifElif[1] : "else") as "if" | "elif" | "else";
+      const condition = ifElif ? ifElif[2].trim() : "";
+
+      if (kind === "if") {
+        branchStack.push(indent);
+      } else if (
+        branchStack.length > 0 &&
+        indent === branchStack[branchStack.length - 1]
+      ) {
+        // elif/else continues the same if-chain; depth unchanged
+      } else if (kind === "elif" || kind === "else") {
+        // Orphan elif/else — still show, treat as new depth
+        branchStack.push(indent);
+      }
+
+      const depth = Math.max(0, branchStack.length - 1);
+      lines.push(
+        emptyTlFields({
+          id: `${relFile}:${lineNo}`,
+          file: relFile,
+          line: lineNo,
+          speaker: null,
+          text: condition,
+          kind,
+          label: currentLabel,
+          branchDepth: depth,
+        }),
+      );
+      continue;
+    }
+
+    const branchDepth = branchStack.length;
+
+    // Literal scene / show / hide / play (display-only timeline markers)
+    const playM = trimmed.match(PLAY_RE);
+    if (playM) {
+      const channel = playM[1] as "music" | "sound" | "ambient";
+      const kind =
+        channel === "music"
+          ? "play_music"
+          : channel === "sound"
+            ? "play_sound"
+            : "play_ambient";
+      lines.push(
+        emptyTlFields({
+          id: `${relFile}:${lineNo}`,
+          file: relFile,
+          line: lineNo,
+          speaker: null,
+          text: playM[2].trim(),
+          kind,
+          label: currentLabel,
+          branchDepth,
+        }),
+      );
+      continue;
+    }
+
+    const sceneM = trimmed.match(SCENE_RE);
+    if (sceneM) {
+      lines.push(
+        emptyTlFields({
+          id: `${relFile}:${lineNo}`,
+          file: relFile,
+          line: lineNo,
+          speaker: null,
+          text: sceneM[1].trim(),
+          kind: "scene",
+          label: currentLabel,
+          branchDepth,
+        }),
+      );
+      continue;
+    }
+
+    const showM = trimmed.match(SHOW_RE);
+    if (showM) {
+      lines.push(
+        emptyTlFields({
+          id: `${relFile}:${lineNo}`,
+          file: relFile,
+          line: lineNo,
+          speaker: null,
+          text: showM[1].trim(),
+          kind: "show",
+          label: currentLabel,
+          branchDepth,
+        }),
+      );
+      continue;
+    }
+
+    const hideM = trimmed.match(HIDE_RE);
+    if (hideM) {
+      lines.push(
+        emptyTlFields({
+          id: `${relFile}:${lineNo}`,
+          file: relFile,
+          line: lineNo,
+          speaker: null,
+          text: hideM[1].trim(),
+          kind: "hide",
+          label: currentLabel,
+          branchDepth,
+        }),
+      );
+      continue;
     }
 
     // Graph edges (only when inside a label)
@@ -336,15 +541,18 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
         const text = unescapeQuoted(cap[2]);
         menuCaption = text;
         if (text.length > 0) {
-          lines.push(emptyTlFields({
-            id: `${relFile}:${lineNo}`,
-            file: relFile,
-            line: lineNo,
-            speaker: null,
-            text,
-            kind: "menu_caption",
-            label: currentLabel,
-          }));
+          lines.push(
+            emptyTlFields({
+              id: `${relFile}:${lineNo}`,
+              file: relFile,
+              line: lineNo,
+              speaker: null,
+              text,
+              kind: "menu_caption",
+              label: currentLabel,
+              branchDepth,
+            }),
+          );
         }
         continue;
       }
@@ -355,15 +563,18 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
       const speaker = withSpeaker[2];
       if (NON_SPEAKERS.has(speaker)) continue;
       if (speaker.includes(".")) continue;
-      lines.push(emptyTlFields({
-        id: `${relFile}:${lineNo}`,
-        file: relFile,
-        line: lineNo,
-        speaker,
-        text: unescapeQuoted(withSpeaker[3]),
-        kind: "say",
-        label: currentLabel,
-      }));
+      lines.push(
+        emptyTlFields({
+          id: `${relFile}:${lineNo}`,
+          file: relFile,
+          line: lineNo,
+          speaker,
+          text: unescapeQuoted(withSpeaker[3]),
+          kind: "say",
+          label: currentLabel,
+          branchDepth,
+        }),
+      );
       continue;
     }
 
@@ -373,15 +584,18 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
         const after = narr[0].slice(narr[1].length + narr[2].length).trim();
         if (trimmed.endsWith(",")) continue;
         if (after && !after.startsWith("#")) continue;
-        lines.push(emptyTlFields({
-          id: `${relFile}:${lineNo}`,
-          file: relFile,
-          line: lineNo,
-          speaker: null,
-          text: unescapeQuoted(narr[2]),
-          kind: "say",
-          label: currentLabel,
-        }));
+        lines.push(
+          emptyTlFields({
+            id: `${relFile}:${lineNo}`,
+            file: relFile,
+            line: lineNo,
+            speaker: null,
+            text: unescapeQuoted(narr[2]),
+            kind: "say",
+            label: currentLabel,
+            branchDepth,
+          }),
+        );
       }
     }
   }
@@ -398,10 +612,19 @@ function emptyTlFields(
     | "tlCommentLine"
     | "tlCommentZh"
     | "tlStale"
-  >,
+    | "callName"
+    | "callArgs"
+  > & {
+    branchDepth?: number;
+    callName?: string | null;
+    callArgs?: string | null;
+  },
 ): DialogueLine {
   return {
     ...base,
+    branchDepth: base.branchDepth ?? 0,
+    callName: base.callName ?? null,
+    callArgs: base.callArgs ?? null,
     textEn: null,
     tlFile: null,
     tlLine: null,
@@ -417,15 +640,19 @@ function attachTranslations(lines: DialogueLine[], gameRoot: string) {
 
   for (const line of lines) {
     if (line.kind === "say") {
+      // Prefer exact Chinese match — line numbers in tl/# comments are often stale.
+      const byZh = tl.byCommentZh.get(line.text);
       const byLine = tl.bySourceLine.get(`${line.file}:${line.line}`);
-      const block = byLine ?? tl.byCommentZh.get(line.text);
+      const block =
+        byZh ??
+        (byLine && byLine.commentZh === line.text ? byLine : null);
       if (block) {
         line.textEn = block.textEn;
         line.tlFile = block.tlFile;
         line.tlLine = block.enLine;
         line.tlCommentLine = block.commentLine;
         line.tlCommentZh = block.commentZh;
-        line.tlStale = block.commentZh !== line.text;
+        line.tlStale = false;
         paired += 1;
       }
     } else if (line.kind === "menu_caption") {
@@ -436,7 +663,7 @@ function attachTranslations(lines: DialogueLine[], gameRoot: string) {
         line.tlLine = pair.newLine;
         line.tlCommentLine = pair.oldLine;
         line.tlCommentZh = pair.oldText;
-        line.tlStale = pair.oldText !== line.text;
+        line.tlStale = false;
         paired += 1;
       }
     }
