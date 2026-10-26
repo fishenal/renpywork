@@ -2,11 +2,13 @@ import fs from "fs";
 import path from "path";
 import { SKIP_DIR_NAMES } from "../project";
 import type {
+  CharacterRef,
   DialogueLine,
   GraphEdge,
   LabelNode,
   ProjectIndex,
 } from "../types";
+import { scanAssets } from "./assets";
 import { computeReachable } from "./graph";
 import { buildTlIndex } from "./tl";
 
@@ -14,8 +16,12 @@ const SAY_WITH_SPEAKER =
   /^(\s*)([A-Za-z_][\w.]*)\s+("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*(?:#.*)?$/;
 const SAY_NARRATOR =
   /^(\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*(?:#.*)?$/;
-const MENU_CAPTION =
+/** Menu choice: `"text":` — colon required */
+const MENU_CHOICE =
   /^(\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*:\s*(?:#.*)?$/;
+/** Menu prompt/title: `"text"` with no trailing colon (Ren'Py set_caption) */
+const MENU_PROMPT =
+  /^(\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*(?:#.*)?$/;
 const LABEL_RE = /^label\s+([A-Za-z_][\w.]*)\s*:/;
 const JUMP_LITERAL = /^(?:jump|call)\s+([A-Za-z_][\w.]*)\b/;
 const JUMP_EXPR = /^(?:jump|call)\s+expression\b/;
@@ -536,9 +542,31 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
     }
 
     if (inMenu) {
-      const cap = raw.match(MENU_CAPTION);
-      if (cap) {
-        const text = unescapeQuoted(cap[2]);
+      // Choice `"…":` first — more specific than prompt (which has no colon)
+      const choice = raw.match(MENU_CHOICE);
+      if (choice) {
+        const text = unescapeQuoted(choice[2]);
+        if (text.length > 0) {
+          lines.push(
+            emptyTlFields({
+              id: `${relFile}:${lineNo}`,
+              file: relFile,
+              line: lineNo,
+              speaker: null,
+              text,
+              kind: "menu_choice",
+              label: currentLabel,
+              branchDepth,
+            }),
+          );
+        }
+        continue;
+      }
+
+      // Prompt `"…"` (no colon) — shown above choices in Ren'Py menus
+      const prompt = raw.match(MENU_PROMPT);
+      if (prompt) {
+        const text = unescapeQuoted(prompt[2]);
         menuCaption = text;
         if (text.length > 0) {
           lines.push(
@@ -573,6 +601,7 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
           kind: "say",
           label: currentLabel,
           branchDepth,
+          allowInsertAfter: !inMenu && currentLabel != null,
         }),
       );
       continue;
@@ -594,6 +623,7 @@ function parseFile(gameRoot: string, relFile: string): FileParseResult {
             kind: "say",
             label: currentLabel,
             branchDepth,
+            allowInsertAfter: currentLabel != null,
           }),
         );
       }
@@ -614,15 +644,18 @@ function emptyTlFields(
     | "tlStale"
     | "callName"
     | "callArgs"
+    | "allowInsertAfter"
   > & {
     branchDepth?: number;
     callName?: string | null;
     callArgs?: string | null;
+    allowInsertAfter?: boolean;
   },
 ): DialogueLine {
   return {
     ...base,
     branchDepth: base.branchDepth ?? 0,
+    allowInsertAfter: base.allowInsertAfter ?? false,
     callName: base.callName ?? null,
     callArgs: base.callArgs ?? null,
     textEn: null,
@@ -655,7 +688,10 @@ function attachTranslations(lines: DialogueLine[], gameRoot: string) {
         line.tlStale = false;
         paired += 1;
       }
-    } else if (line.kind === "menu_caption") {
+    } else if (
+      line.kind === "menu_caption" ||
+      line.kind === "menu_choice"
+    ) {
       const pair = tl.byOldText.get(line.text);
       if (pair) {
         line.textEn = pair.newText;
@@ -718,6 +754,7 @@ export function scanProject(gameRoot: string): ProjectIndex {
     : [];
 
   const { paired, lang } = attachTranslations(lines, gameRoot);
+  const characters = collectCharacters(gameRoot);
 
   return {
     gameRoot,
@@ -727,7 +764,20 @@ export function scanProject(gameRoot: string): ProjectIndex {
     labels,
     edges,
     reachable,
+    characters,
     tlLang: lang,
     tlPairedCount: paired,
   };
+}
+
+function collectCharacters(gameRoot: string): CharacterRef[] {
+  const assets = scanAssets(gameRoot);
+  const byName = new Map<string, CharacterRef>();
+  for (const item of assets.items) {
+    if (item.kind !== "character") continue;
+    if (!byName.has(item.name)) {
+      byName.set(item.name, { name: item.name, note: item.note });
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

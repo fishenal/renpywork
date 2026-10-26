@@ -7,6 +7,7 @@ export type ProjectSession = {
 export type DialogueLineKind =
   | "say"
   | "menu_caption"
+  | "menu_choice"
   | "if"
   | "elif"
   | "else"
@@ -30,6 +31,11 @@ export type DialogueLine = {
   label: string | null;
   /** Nesting depth inside if/elif/else (0 = top-level) */
   branchDepth: number;
+  /**
+   * Whether "新增" is allowed after this line (say outside menu / screen / etc.).
+   * Menu captions/choices and markers are always false.
+   */
+  allowInsertAfter: boolean;
   /** For kind py_call: function / method name (e.g. team_talk) */
   callName: string | null;
   /** For kind py_call: raw argument list inside (...) */
@@ -64,6 +70,13 @@ export type GraphEdge = {
   line: number;
 };
 
+export type CharacterRef = {
+  /** Script id, e.g. lz */
+  name: string;
+  /** Display name from Character(...) or ## note */
+  note: string | null;
+};
+
 export type ProjectIndex = {
   gameRoot: string;
   files: string[];
@@ -73,6 +86,8 @@ export type ProjectIndex = {
   edges: GraphEdge[];
   /** Labels reachable from entryLabel via static edges */
   reachable: string[];
+  /** Characters from define Character / aliases */
+  characters: CharacterRef[];
   /** Active translation language folder under tl/ */
   tlLang: string | null;
   /** How many source lines have EN pairs */
@@ -92,4 +107,48 @@ export type WriteEdit = {
   text: string;
   /** When true, file may be under tl/ */
   allowTl?: boolean;
+  /**
+   * When `true`, rewrite say-line speaker using `speaker`
+   * (`null` = narrator / no speaker token).
+   */
+  applySpeaker?: boolean;
+  speaker?: string | null;
+  /** Dialogue line id (scanned or pending:…) for staged structure saves */
+  id?: string;
+};
+
+/** Client/server staged structure op (chronological). */
+export type StagedStructureOp =
+  | { op: "delete"; id: string; file: string }
+  | {
+      op: "insert";
+      id: string;
+      file: string;
+      afterId: string;
+      speaker: string | null;
+      text: string;
+    };
+
+export type LineAnchor = {
+  id: string;
+  file: string;
+  line: number;
+};
+
+export type StagedContent = {
+  id: string;
+  file: string;
+  text: string;
+  applySpeaker?: boolean;
+  speaker?: string | null;
+};
+
+export type StagedSaveBody = {
+  /** Scan-time line numbers for real dialogue ids in affected files */
+  anchors: LineAnchor[];
+  structureOps: StagedStructureOp[];
+  /** Final say text/speaker for surviving lines (incl. pending inserts) */
+  contents: StagedContent[];
+  /** tl/ edits still by absolute line number */
+  tlEdits: WriteEdit[];
 };

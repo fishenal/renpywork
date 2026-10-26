@@ -13,7 +13,17 @@ import { BranchGraph } from "@/components/BranchGraph";
 import { FileList } from "@/components/FileList";
 import { LineEditor } from "@/components/LineEditor";
 import { ProjectPicker, pushRecent } from "@/components/ProjectPicker";
-import type { ProjectIndex, ProjectSession } from "@/lib/types";
+import {
+  buildVisibleLines,
+  collectInsertDescendants,
+  isPendingId,
+} from "@/lib/stage";
+import type {
+  DialogueLine,
+  ProjectIndex,
+  ProjectSession,
+  StagedStructureOp,
+} from "@/lib/types";
 
 type Toast = { kind: "ok" | "error"; message: string } | null;
 
@@ -38,6 +48,14 @@ export default function HomePage() {
   const [index, setIndex] = useState<ProjectIndex | null>(null);
   const [draftsZh, setDraftsZh] = useState<Record<string, string>>({});
   const [draftsEn, setDraftsEn] = useState<Record<string, string>>({});
+  const [draftsSpeaker, setDraftsSpeaker] = useState<
+    Record<string, string | null>
+  >({});
+  /** Chronological structure ops (pending until Save) */
+  const [structureOps, setStructureOps] = useState<StagedStructureOp[]>([]);
+  const [pendingLines, setPendingLines] = useState<
+    Record<string, DialogueLine>
+  >({});
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -48,6 +66,7 @@ export default function HomePage() {
   const leftPaneRef = useRef<HTMLElement | null>(null);
   const rightPaneRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const pendingSeq = useRef(0);
 
   useEffect(() => {
     if (rightPaneRef.current) {
@@ -134,12 +153,54 @@ export default function HomePage() {
     window.setTimeout(() => setToast(null), 3500);
   }, []);
 
+  const deletedIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const op of structureOps) {
+      if (op.op === "delete") set.add(op.id);
+    }
+    return set;
+  }, [structureOps]);
+
+  const insertOps = useMemo(
+    () =>
+      structureOps.filter(
+        (o): o is Extract<StagedStructureOp, { op: "insert" }> =>
+          o.op === "insert",
+      ),
+    [structureOps],
+  );
+
+  const editorLines = useMemo(() => {
+    if (!index) return [] as DialogueLine[];
+    if (!selectedFile) return index.lines;
+    const visible = buildVisibleLines(
+      index.lines,
+      selectedFile,
+      deletedIds,
+      pendingLines,
+      insertOps,
+    );
+    // Keep other files' lines for LineEditor filter (it filters by selectedFile)
+    const others = index.lines.filter(
+      (l) => l.file !== selectedFile && !deletedIds.has(l.id),
+    );
+    return [...others, ...visible];
+  }, [index, selectedFile, deletedIds, pendingLines, insertOps]);
+
   const dirtyCount = useMemo(() => {
     if (!index) return 0;
-    let n = 0;
-    for (const line of index.lines) {
+    let n = structureOps.length;
+    const allLines = [
+      ...index.lines.filter((l) => !deletedIds.has(l.id)),
+      ...Object.values(pendingLines).filter((l) => !deletedIds.has(l.id)),
+    ];
+    for (const line of allLines) {
+      const baseText = isPendingId(line.id) ? line.text : line.text;
       const zh = draftsZh[line.id];
-      if (zh !== undefined && zh !== line.text) n += 1;
+      if (zh !== undefined && zh !== baseText) n += 1;
+      else if (isPendingId(line.id) && (zh ?? line.text) === line.text) {
+        // pending empty line still counted via structureOps insert
+      }
       const en = draftsEn[line.id];
       if (
         en !== undefined &&
@@ -148,37 +209,71 @@ export default function HomePage() {
       ) {
         n += 1;
       }
+      if (
+        Object.prototype.hasOwnProperty.call(draftsSpeaker, line.id) &&
+        (draftsSpeaker[line.id] ?? null) !== line.speaker
+      ) {
+        n += 1;
+      }
     }
     return n;
-  }, [draftsZh, draftsEn, index]);
+  }, [
+    draftsZh,
+    draftsEn,
+    draftsSpeaker,
+    index,
+    structureOps,
+    pendingLines,
+    deletedIds,
+  ]);
 
   const lineCounts = useMemo(() => {
     const map: Record<string, number> = {};
     if (!index) return map;
-    for (const line of index.lines) {
-      map[line.file] = (map[line.file] ?? 0) + 1;
+    for (const file of index.files) {
+      const visible = buildVisibleLines(
+        index.lines,
+        file,
+        deletedIds,
+        pendingLines,
+        insertOps,
+      );
+      map[file] = visible.length;
     }
     return map;
-  }, [index]);
+  }, [index, deletedIds, pendingLines, insertOps]);
+
+  const clearDrafts = useCallback(() => {
+    setDraftsZh({});
+    setDraftsEn({});
+    setDraftsSpeaker({});
+    setStructureOps([]);
+    setPendingLines({});
+  }, []);
 
   const confirmDiscardIfNeeded = useCallback(() => {
     if (dirtyCount === 0) return true;
     return window.confirm(`有 ${dirtyCount} 处未保存修改，确定丢弃吗？`);
   }, [dirtyCount]);
 
-  const applyIndex = useCallback((next: ProjectIndex, keepFile?: string | null) => {
-    setIndex(next);
-    setDraftsZh({});
-    setDraftsEn({});
-    const preferred =
-      keepFile && next.files.includes(keepFile)
-        ? keepFile
-        : defaultFileForIndex(next);
-    setSelectedFile(preferred);
-  }, []);
+  const applyIndex = useCallback(
+    (next: ProjectIndex, keepFile?: string | null) => {
+      setIndex(next);
+      clearDrafts();
+      const preferred =
+        keepFile && next.files.includes(keepFile)
+          ? keepFile
+          : defaultFileForIndex(next);
+      setSelectedFile(preferred);
+    },
+    [clearDrafts],
+  );
 
   const runScan = useCallback(
-    async (keepFile?: string | null) => {
+    async (
+      keepFile?: string | null,
+      opts?: { toastMessage?: string | null },
+    ) => {
       setBusy(true);
       try {
         const res = await fetch("/api/scan");
@@ -189,18 +284,23 @@ export default function HomePage() {
         };
         if (!res.ok || !data.index) {
           showToast("error", data.error || "扫描失败");
-          return;
+          return null;
         }
         if (data.session) setSession(data.session);
         const preserve =
           keepFile === undefined ? selectedFile : keepFile;
         applyIndex(data.index, preserve);
-        showToast(
-          "ok",
-          `已扫描 ${data.index.files.length} 文件 · ${data.index.lines.length} 行 · 英对照 ${data.index.tlPairedCount} · 可达 ${data.index.reachable.length} 节点`,
-        );
+        if (opts?.toastMessage !== null) {
+          showToast(
+            "ok",
+            opts?.toastMessage ??
+              `已扫描 ${data.index.files.length} 文件 · ${data.index.lines.length} 行 · 英对照 ${data.index.tlPairedCount} · 可达 ${data.index.reachable.length} 节点`,
+          );
+        }
+        return data.index;
       } catch (err) {
         showToast("error", err instanceof Error ? err.message : "扫描失败");
+        return null;
       } finally {
         setBusy(false);
       }
@@ -241,49 +341,93 @@ export default function HomePage() {
     setDraftsEn((prev) => ({ ...prev, [id]: text }));
   }
 
+  function onDraftSpeakerChange(id: string, speaker: string | null) {
+    setDraftsSpeaker((prev) => ({ ...prev, [id]: speaker }));
+  }
+
   function selectFile(file: string) {
     if (file === selectedFile) return;
     if (!confirmDiscardIfNeeded()) return;
     setSelectedFile(file);
-    if (dirtyCount > 0) {
-      setDraftsZh({});
-      setDraftsEn({});
-    }
+    if (dirtyCount > 0) clearDrafts();
   }
 
   async function handleSave() {
     if (!index || dirtyCount === 0) return;
-    const edits: {
+
+    const surviving = [
+      ...index.lines.filter((l) => !deletedIds.has(l.id)),
+      ...Object.values(pendingLines).filter((l) => !deletedIds.has(l.id)),
+    ];
+
+    const contents: {
+      id: string;
+      file: string;
+      text: string;
+      applySpeaker?: boolean;
+      speaker?: string | null;
+    }[] = [];
+    const tlEdits: {
       file: string;
       line: number;
       text: string;
       allowTl?: boolean;
     }[] = [];
 
-    for (const line of index.lines) {
+    for (const line of surviving) {
       const zh = draftsZh[line.id] ?? line.text;
       const zhDirty = zh !== line.text;
+      const speakerDirty =
+        Object.prototype.hasOwnProperty.call(draftsSpeaker, line.id) &&
+        (draftsSpeaker[line.id] ?? null) !== line.speaker;
+      const speaker = Object.prototype.hasOwnProperty.call(
+        draftsSpeaker,
+        line.id,
+      )
+        ? (draftsSpeaker[line.id] ?? null)
+        : line.speaker;
+
+      if (isPendingId(line.id)) {
+        contents.push({
+          id: line.id,
+          file: line.file,
+          text: zh,
+          applySpeaker: true,
+          speaker,
+        });
+      } else if (line.kind === "say" && (zhDirty || speakerDirty)) {
+        contents.push({
+          id: line.id,
+          file: line.file,
+          text: zh,
+          applySpeaker: speakerDirty,
+          speaker: speakerDirty ? speaker : undefined,
+        });
+      } else if (zhDirty) {
+        contents.push({ id: line.id, file: line.file, text: zh });
+      }
+
+      if (
+        zhDirty &&
+        !isPendingId(line.id) &&
+        line.tlFile &&
+        line.tlCommentLine != null
+      ) {
+        tlEdits.push({
+          file: line.tlFile,
+          line: line.tlCommentLine,
+          text: zh,
+          allowTl: true,
+        });
+      }
+
       const en = draftsEn[line.id] ?? line.textEn ?? "";
       const enDirty =
         line.tlFile != null &&
         draftsEn[line.id] !== undefined &&
         en !== (line.textEn ?? "");
-
-      if (zhDirty) {
-        edits.push({ file: line.file, line: line.line, text: zh });
-        // Sync tl `#` comment or `old` string to new Chinese
-        if (line.tlFile && line.tlCommentLine != null) {
-          edits.push({
-            file: line.tlFile,
-            line: line.tlCommentLine,
-            text: zh,
-            allowTl: true,
-          });
-        }
-      }
-
       if (enDirty && line.tlFile && line.tlLine != null) {
-        edits.push({
+        tlEdits.push({
           file: line.tlFile,
           line: line.tlLine,
           text: en,
@@ -292,14 +436,40 @@ export default function HomePage() {
       }
     }
 
-    if (edits.length === 0) return;
+    // Collapse: drop insert ops whose id was later deleted
+    const finalOps = structureOps.filter((op) => {
+      if (op.op === "insert" && deletedIds.has(op.id)) return false;
+      if (op.op === "delete" && isPendingId(op.id)) return false;
+      return true;
+    });
+
+    const affectedFiles = new Set<string>();
+    for (const op of finalOps) affectedFiles.add(op.file);
+    for (const c of contents) affectedFiles.add(c.file);
+
+    const anchors = index.lines
+      .filter((l) => affectedFiles.has(l.file))
+      .map((l) => ({ id: l.id, file: l.file, line: l.line }));
+
+    if (
+      finalOps.length === 0 &&
+      contents.length === 0 &&
+      tlEdits.length === 0
+    ) {
+      return;
+    }
 
     setBusy(true);
     try {
       const res = await fetch("/api/write", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ edits }),
+        body: JSON.stringify({
+          anchors,
+          structureOps: finalOps,
+          contents,
+          tlEdits,
+        }),
       });
       const data = (await res.json()) as {
         updatedFiles?: string[];
@@ -313,12 +483,14 @@ export default function HomePage() {
       if (data.errors?.length) {
         showToast("error", `部分失败：${data.errors.slice(0, 3).join("; ")}`);
       } else {
+        const n =
+          finalOps.length + contents.length + tlEdits.length;
         showToast(
           "ok",
-          `已写入 ${data.updatedFiles?.length ?? 0} 个文件（${edits.length} 处）· 请核对英文`,
+          `已写入 ${data.updatedFiles?.length ?? 0} 个文件（${n} 处）· 请核对英文`,
         );
       }
-      await runScan();
+      await runScan(selectedFile);
     } catch (err) {
       showToast("error", err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -331,6 +503,109 @@ export default function HomePage() {
     void runScan();
   }
 
+  function handleDeleteLine(line: DialogueLine) {
+    const zh = draftsZh[line.id] ?? line.text;
+    const preview = zh.length > 36 ? `${zh.slice(0, 36)}…` : zh;
+    if (
+      !window.confirm(
+        `确定删除这句对话？（暂存，点保存后才写入文件）\n「${preview || "（空）"}」`,
+      )
+    ) {
+      return;
+    }
+
+    if (isPendingId(line.id)) {
+      const descendants = collectInsertDescendants(line.id, structureOps);
+      const removeIds = new Set([line.id, ...descendants]);
+      setStructureOps((prev) =>
+        prev.filter((op) => {
+          if (op.op === "insert" && removeIds.has(op.id)) return false;
+          if (op.op === "delete" && removeIds.has(op.id)) return false;
+          return true;
+        }),
+      );
+      setPendingLines((prev) => {
+        const next = { ...prev };
+        for (const id of removeIds) delete next[id];
+        return next;
+      });
+      setDraftsZh((prev) => {
+        const next = { ...prev };
+        for (const id of removeIds) delete next[id];
+        return next;
+      });
+      setDraftsSpeaker((prev) => {
+        const next = { ...prev };
+        for (const id of removeIds) delete next[id];
+        return next;
+      });
+      return;
+    }
+
+    const descendants = collectInsertDescendants(line.id, structureOps);
+    setStructureOps((prev) => [
+      ...prev.filter(
+        (op) => !(op.op === "insert" && descendants.has(op.id)),
+      ),
+      { op: "delete", id: line.id, file: line.file },
+    ]);
+    setPendingLines((prev) => {
+      const next = { ...prev };
+      for (const id of descendants) delete next[id];
+      return next;
+    });
+  }
+
+  function handleInsertLine(line: DialogueLine, speaker: string | null) {
+    if (!line.allowInsertAfter && !isPendingId(line.id)) {
+      showToast("error", "此处不可新增（menu 块内等）");
+      return;
+    }
+
+    pendingSeq.current += 1;
+    const id = `pending:${pendingSeq.current}`;
+    const pending: DialogueLine = {
+      id,
+      file: line.file,
+      line: 0,
+      speaker,
+      text: "",
+      kind: "say",
+      label: line.label,
+      branchDepth: line.branchDepth,
+      allowInsertAfter: true,
+      callName: null,
+      callArgs: null,
+      textEn: null,
+      tlFile: null,
+      tlLine: null,
+      tlCommentLine: null,
+      tlCommentZh: null,
+      tlStale: false,
+    };
+
+    setPendingLines((prev) => ({ ...prev, [id]: pending }));
+    setStructureOps((prev) => [
+      ...prev,
+      {
+        op: "insert",
+        id,
+        file: line.file,
+        afterId: line.id,
+        speaker,
+        text: "",
+      },
+    ]);
+    setDraftsSpeaker((prev) => ({ ...prev, [id]: speaker }));
+    setDraftsZh((prev) => ({ ...prev, [id]: "" }));
+
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-id="${id}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+
   function handleOpenPicker() {
     if (!confirmDiscardIfNeeded()) return;
     setPickerOpen(true);
@@ -339,8 +614,7 @@ export default function HomePage() {
   function handleOpened(next: ProjectSession) {
     setSession(next);
     setIndex(null);
-    setDraftsZh({});
-    setDraftsEn({});
+    clearDrafts();
     setSelectedFile(null);
     void runScan(null);
   }
@@ -473,12 +747,18 @@ export default function HomePage() {
               {dirtyCount > 0 ? ` · ${dirtyCount} 未保存` : ""}
             </div>
             <LineEditor
-              lines={index?.lines ?? []}
+              lines={editorLines}
+              characters={index?.characters ?? []}
               draftsZh={draftsZh}
               draftsEn={draftsEn}
+              draftsSpeaker={draftsSpeaker}
               selectedFile={selectedFile}
+              busy={busy}
               onDraftZhChange={onDraftZhChange}
               onDraftEnChange={onDraftEnChange}
+              onDraftSpeakerChange={onDraftSpeakerChange}
+              onDeleteLine={handleDeleteLine}
+              onInsertLine={handleInsertLine}
             />
           </main>
         </div>
