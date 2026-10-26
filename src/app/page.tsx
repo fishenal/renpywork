@@ -42,6 +42,10 @@ const GRAPH_COLLAPSED_KEY = "renpywork.graphCollapsed";
 const GRAPH_HEIGHT_DEFAULT = 280;
 const GRAPH_HEIGHT_MIN = 140;
 const GRAPH_HEIGHT_MAX_RATIO = 0.72;
+const LEFT_WIDTH_KEY = "renpywork.leftWidth";
+const LEFT_WIDTH_DEFAULT = 420;
+const LEFT_WIDTH_MIN = 240;
+const LEFT_WIDTH_MAX_RATIO = 0.65;
 
 function defaultFileForIndex(index: ProjectIndex): string | null {
   if (index.entryLabel && index.labels[index.entryLabel]?.file) {
@@ -99,9 +103,14 @@ export default function HomePage() {
   const [bootstrapped, setBootstrapped] = useState(false);
   const [graphCollapsed, setGraphCollapsed] = useState(false);
   const [graphHeight, setGraphHeight] = useState(GRAPH_HEIGHT_DEFAULT);
+  const [leftWidth, setLeftWidth] = useState(LEFT_WIDTH_DEFAULT);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
   const leftPaneRef = useRef<HTMLElement | null>(null);
   const rightPaneRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const colDragRef = useRef<{ startX: number; startWidth: number } | null>(
+    null,
+  );
   const pendingSeq = useRef(0);
   const [history, setHistory] = useState<EditorHistory>(() => emptyHistory());
   const applyingHistory = useRef(false);
@@ -219,10 +228,22 @@ export default function HomePage() {
   }, [handleUndo, handleRedo]);
 
   useEffect(() => {
-    if (rightPaneRef.current) {
-      rightPaneRef.current.scrollTop = 0;
-    }
+    const list = rightPaneRef.current?.querySelector(".line-list");
+    if (list instanceof HTMLElement) list.scrollTop = 0;
   }, [selectedFile]);
+
+  useEffect(() => {
+    const pinDocument = () => {
+      if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
+        window.scrollTo(0, 0);
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+      }
+    };
+    pinDocument();
+    window.addEventListener("scroll", pinDocument, { passive: true });
+    return () => window.removeEventListener("scroll", pinDocument);
+  }, []);
 
   useEffect(() => {
     try {
@@ -232,6 +253,10 @@ export default function HomePage() {
       }
       const collapsed = window.localStorage.getItem(GRAPH_COLLAPSED_KEY);
       if (collapsed === "1") setGraphCollapsed(true);
+      const lw = Number(window.localStorage.getItem(LEFT_WIDTH_KEY));
+      if (Number.isFinite(lw) && lw >= LEFT_WIDTH_MIN) {
+        setLeftWidth(lw);
+      }
     } catch {
       // ignore storage errors
     }
@@ -256,6 +281,14 @@ export default function HomePage() {
     }
   }, [graphCollapsed]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LEFT_WIDTH_KEY, String(leftWidth));
+    } catch {
+      // ignore
+    }
+  }, [leftWidth]);
+
   const clampGraphHeight = useCallback((raw: number) => {
     const pane = leftPaneRef.current?.clientHeight ?? window.innerHeight;
     const max = Math.max(
@@ -263,6 +296,15 @@ export default function HomePage() {
       Math.floor(pane * GRAPH_HEIGHT_MAX_RATIO),
     );
     return Math.min(max, Math.max(GRAPH_HEIGHT_MIN, Math.round(raw)));
+  }, []);
+
+  const clampLeftWidth = useCallback((raw: number) => {
+    const workspace = workspaceRef.current?.clientWidth ?? window.innerWidth;
+    const max = Math.max(
+      LEFT_WIDTH_MIN + 80,
+      Math.floor(workspace * LEFT_WIDTH_MAX_RATIO),
+    );
+    return Math.min(max, Math.max(LEFT_WIDTH_MIN, Math.round(raw)));
   }, []);
 
   const onSplitterPointerDown = useCallback(
@@ -289,6 +331,37 @@ export default function HomePage() {
     (e: ReactPointerEvent<HTMLButtonElement>) => {
       if (!dragRef.current) return;
       dragRef.current = null;
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    },
+    [],
+  );
+
+  const onColSplitterPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      colDragRef.current = { startX: e.clientX, startWidth: leftWidth };
+    },
+    [leftWidth],
+  );
+
+  const onColSplitterPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!colDragRef.current) return;
+      const delta = e.clientX - colDragRef.current.startX;
+      setLeftWidth(clampLeftWidth(colDragRef.current.startWidth + delta));
+    },
+    [clampLeftWidth],
+  );
+
+  const onColSplitterPointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!colDragRef.current) return;
+      colDragRef.current = null;
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);
       } catch {
@@ -1014,8 +1087,12 @@ export default function HomePage() {
           </div>
         </main>
       ) : (
-        <div className="workspace">
-          <aside className="left-pane" ref={leftPaneRef}>
+        <div className="workspace" ref={workspaceRef}>
+          <aside
+            className="left-pane"
+            ref={leftPaneRef}
+            style={{ width: leftWidth }}
+          >
             <section
               className={`graph-section${graphCollapsed ? " collapsed" : ""}`}
               style={
@@ -1071,6 +1148,15 @@ export default function HomePage() {
               />
             </section>
           </aside>
+          <button
+            type="button"
+            className="col-splitter"
+            aria-label="拖动调整左右宽度"
+            onPointerDown={onColSplitterPointerDown}
+            onPointerMove={onColSplitterPointerMove}
+            onPointerUp={onColSplitterPointerUp}
+            onPointerCancel={onColSplitterPointerUp}
+          />
           <main className="right-pane" ref={rightPaneRef}>
             <div className="right-toolbar muted">
               {index

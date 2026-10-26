@@ -342,6 +342,7 @@ export function LineEditor({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setOpenEn({});
@@ -375,7 +376,9 @@ export function LineEditor({
 
   if (!selectedFile) {
     return (
-      <p className="empty-hint">请从左侧文件列表选择一个 .rpy 文件开始编辑。</p>
+      <div className="line-editor">
+        <p className="empty-hint">请从左侧文件列表选择一个 .rpy 文件开始编辑。</p>
+      </div>
     );
   }
 
@@ -383,9 +386,11 @@ export function LineEditor({
 
   if (visible.length === 0) {
     return (
-      <p className="empty-hint">
-        <code>{selectedFile}</code> 中没有扫描到对话行。
-      </p>
+      <div className="line-editor">
+        <p className="empty-hint">
+          <code>{selectedFile}</code> 中没有扫描到对话行。
+        </p>
+      </div>
     );
   }
 
@@ -469,9 +474,28 @@ export function LineEditor({
     if (!newId) return;
     setSelectedId(newId);
     window.requestAnimationFrame(() => {
-      document
-        .querySelector(`[data-id="${newId}"]`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Keep document pinned — scrollIntoView can shift window.scrollY
+      // under overflow:hidden and leave the shell unrecoverable.
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+
+      const el = listRef.current?.querySelector(
+        `[data-id="${newId}"]`,
+      ) as HTMLElement | null;
+      const scroller = listRef.current;
+      if (!el || !scroller) return;
+      const elRect = el.getBoundingClientRect();
+      const scRect = scroller.getBoundingClientRect();
+      const delta =
+        elRect.top -
+        scRect.top -
+        scRect.height / 2 +
+        elRect.height / 2;
+      scroller.scrollTo({
+        top: Math.max(0, scroller.scrollTop + delta),
+        behavior: "smooth",
+      });
     });
   }
 
@@ -1261,7 +1285,8 @@ export function LineEditor({
   }
 
   return (
-    <div className="line-list">
+    <div className="line-editor">
+      <div className="editor-chrome">
       <div className="editor-file-banner muted">
         正在编辑 <code>{selectedFile}</code> · {dialogueCount} 对话
         {branchCount > 0 ? ` · ${branchCount} 分支` : ""}
@@ -1476,7 +1501,9 @@ export function LineEditor({
             : "点击条目以选中"}
         </span>
       </div>
+      </div>
 
+      <div className="line-list" ref={listRef}>
       {blocks.map((block) => (
         <section
           key={block.key}
@@ -1496,6 +1523,7 @@ export function LineEditor({
           </div>
         </section>
       ))}
+      </div>
     </div>
   );
 }

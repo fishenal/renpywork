@@ -23,6 +23,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background:
     radial-gradient(1200px 600px at 10% -10%, #efe6d6 0%, transparent 55%),
     radial-gradient(900px 500px at 100% 0%, #d9e5df 0%, transparent 50%),
@@ -170,21 +171,52 @@ button {
 .workspace {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(280px, 42%) 1fr;
+  display: flex;
   gap: 0;
   border-top: 1px solid var(--border);
   overflow: hidden;
 }
 
 .left-pane {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   max-height: 100%;
   overflow: hidden;
-  border-right: 1px solid var(--border);
   background: rgba(255, 253, 249, 0.55);
+}
+
+.col-splitter {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: transparent;
+  border: none;
+  padding: 0;
+  position: relative;
+  z-index: 2;
+  align-self: stretch;
+}
+
+.col-splitter::before {
+  content: "";
+  position: absolute;
+  top: 12%;
+  bottom: 12%;
+  left: 1px;
+  right: 1px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.col-splitter:hover::before,
+.col-splitter:focus-visible::before {
+  background: var(--accent);
+}
+
+.col-splitter:focus-visible {
+  outline: none;
 }
 
 .graph-section {
@@ -271,15 +303,32 @@ button {
 }
 
 .right-pane {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 0.75rem 1rem 1.5rem;
   background: transparent;
 }
 
 .right-toolbar {
+  flex: 0 0 auto;
   font-size: 0.85rem;
   margin-bottom: 0.65rem;
+}
+
+.line-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-chrome {
+  flex: 0 0 auto;
 }
 
 .branch-graph {
@@ -653,13 +702,17 @@ button {
 
 @media (max-width: 900px) {
   .workspace {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(220px, 40vh) 1fr;
+    flex-direction: column;
   }
 
   .left-pane {
-    border-right: none;
+    width: 100% !important;
+    height: min(40vh, 320px);
     border-bottom: 1px solid var(--border);
+  }
+
+  .col-splitter {
+    display: none;
   }
 }
 
@@ -707,9 +760,14 @@ button {
 }
 
 .line-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  padding-bottom: 0.5rem;
 }
 
 .label-block {
@@ -802,10 +860,7 @@ button {
   padding: 0.45rem 0.55rem;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 253, 249, 0.85);
-  position: sticky;
-  top: 0;
-  z-index: 5;
+  background: rgba(255, 253, 249, 0.92);
 }
 
 .tb-btn {

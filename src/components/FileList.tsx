@@ -10,7 +10,7 @@ type Props = {
 };
 
 export function FileList({ files, selectedFile, onSelect, lineCounts }: Props) {
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState("scenes");
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
