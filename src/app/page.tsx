@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,6 +15,15 @@ import { FileList } from "@/components/FileList";
 import { LineEditor } from "@/components/LineEditor";
 import { ProjectPicker, pushRecent } from "@/components/ProjectPicker";
 import {
+  emptyHistory,
+  pushSnapshot,
+  redoHistory,
+  undoHistory,
+  type EditorHistory,
+  type EditorSnapshot,
+} from "@/lib/history";
+import {
+  applySwapOps,
   buildVisibleLines,
   collectInsertDescendants,
   isPendingId,
@@ -43,6 +53,28 @@ function defaultFileForIndex(index: ProjectIndex): string | null {
   return withLines ?? index.files[0] ?? null;
 }
 
+function statementBase(line: DialogueLine): string {
+  if (line.kind === "scene") return `scene ${line.text}`.trim();
+  if (line.kind === "play_music") return `play music ${line.text}`.trim();
+  if (line.kind === "play_sound") return `play sound ${line.text}`.trim();
+  if (line.kind === "play_ambient") return `play ambient ${line.text}`.trim();
+  if (line.kind === "show" || line.kind === "hide") {
+    return `${line.kind} ${line.text}`.trim();
+  }
+  return line.text;
+}
+
+function isStatementKind(kind: DialogueLine["kind"]): boolean {
+  return (
+    kind === "show" ||
+    kind === "hide" ||
+    kind === "scene" ||
+    kind === "play_music" ||
+    kind === "play_sound" ||
+    kind === "play_ambient"
+  );
+}
+
 export default function HomePage() {
   const [session, setSession] = useState<ProjectSession | null>(null);
   const [index, setIndex] = useState<ProjectIndex | null>(null);
@@ -50,6 +82,10 @@ export default function HomePage() {
   const [draftsEn, setDraftsEn] = useState<Record<string, string>>({});
   const [draftsSpeaker, setDraftsSpeaker] = useState<
     Record<string, string | null>
+  >({});
+  /** Full `show …` / `hide …` statement drafts (no indent) */
+  const [draftsStatement, setDraftsStatement] = useState<
+    Record<string, string>
   >({});
   /** Chronological structure ops (pending until Save) */
   const [structureOps, setStructureOps] = useState<StagedStructureOp[]>([]);
@@ -67,6 +103,120 @@ export default function HomePage() {
   const rightPaneRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const pendingSeq = useRef(0);
+  const [history, setHistory] = useState<EditorHistory>(() => emptyHistory());
+  const applyingHistory = useRef(false);
+  /** Coalesce rapid text edits into one undo step */
+  const typingBurst = useRef(false);
+  const typingBurstTimer = useRef<number | null>(null);
+
+  const snapshotRef = useRef<EditorSnapshot>({
+    draftsZh: {},
+    draftsEn: {},
+    draftsSpeaker: {},
+    draftsStatement: {},
+    structureOps: [],
+    pendingLines: {},
+    pendingSeq: 0,
+  });
+
+  useLayoutEffect(() => {
+    snapshotRef.current = {
+      draftsZh,
+      draftsEn,
+      draftsSpeaker,
+      draftsStatement,
+      structureOps,
+      pendingLines,
+      pendingSeq: pendingSeq.current,
+    };
+  }, [
+    draftsZh,
+    draftsEn,
+    draftsSpeaker,
+    draftsStatement,
+    structureOps,
+    pendingLines,
+  ]);
+
+  const historyRef = useRef(history);
+  historyRef.current = history;
+
+  const recordHistory = useCallback(() => {
+    if (applyingHistory.current) return;
+    setHistory((h) => pushSnapshot(h, snapshotRef.current));
+  }, []);
+
+  const recordDraftHistory = useCallback(() => {
+    if (applyingHistory.current) return;
+    if (!typingBurst.current) {
+      recordHistory();
+      typingBurst.current = true;
+    }
+    if (typingBurstTimer.current != null) {
+      window.clearTimeout(typingBurstTimer.current);
+    }
+    typingBurstTimer.current = window.setTimeout(() => {
+      typingBurst.current = false;
+      typingBurstTimer.current = null;
+    }, 450);
+  }, [recordHistory]);
+
+  const recordStructureHistory = useCallback(() => {
+    typingBurst.current = false;
+    if (typingBurstTimer.current != null) {
+      window.clearTimeout(typingBurstTimer.current);
+      typingBurstTimer.current = null;
+    }
+    recordHistory();
+  }, [recordHistory]);
+
+  const applySnapshot = useCallback((snap: EditorSnapshot) => {
+    applyingHistory.current = true;
+    setDraftsZh(snap.draftsZh);
+    setDraftsEn(snap.draftsEn);
+    setDraftsSpeaker(snap.draftsSpeaker);
+    setDraftsStatement(snap.draftsStatement);
+    setStructureOps(snap.structureOps);
+    setPendingLines(snap.pendingLines);
+    pendingSeq.current = snap.pendingSeq;
+    snapshotRef.current = snap;
+    window.queueMicrotask(() => {
+      applyingHistory.current = false;
+    });
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const result = undoHistory(historyRef.current, snapshotRef.current);
+    if (!result) return;
+    historyRef.current = result.history;
+    setHistory(result.history);
+    applySnapshot(result.snapshot);
+  }, [applySnapshot]);
+
+  const handleRedo = useCallback(() => {
+    const result = redoHistory(historyRef.current, snapshotRef.current);
+    if (!result) return;
+    historyRef.current = result.history;
+    setHistory(result.history);
+    applySnapshot(result.snapshot);
+  }, [applySnapshot]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleUndo, handleRedo]);
 
   useEffect(() => {
     if (rightPaneRef.current) {
@@ -170,22 +320,34 @@ export default function HomePage() {
     [structureOps],
   );
 
+  const swapOps = useMemo(
+    () =>
+      structureOps.filter(
+        (o): o is Extract<StagedStructureOp, { op: "swap" }> =>
+          o.op === "swap",
+      ),
+    [structureOps],
+  );
+
   const editorLines = useMemo(() => {
     if (!index) return [] as DialogueLine[];
     if (!selectedFile) return index.lines;
-    const visible = buildVisibleLines(
-      index.lines,
-      selectedFile,
-      deletedIds,
-      pendingLines,
-      insertOps,
+    const visible = applySwapOps(
+      buildVisibleLines(
+        index.lines,
+        selectedFile,
+        deletedIds,
+        pendingLines,
+        insertOps,
+      ),
+      swapOps.filter((s) => s.file === selectedFile),
     );
     // Keep other files' lines for LineEditor filter (it filters by selectedFile)
     const others = index.lines.filter(
       (l) => l.file !== selectedFile && !deletedIds.has(l.id),
     );
     return [...others, ...visible];
-  }, [index, selectedFile, deletedIds, pendingLines, insertOps]);
+  }, [index, selectedFile, deletedIds, pendingLines, insertOps, swapOps]);
 
   const dirtyCount = useMemo(() => {
     if (!index) return 0;
@@ -215,12 +377,25 @@ export default function HomePage() {
       ) {
         n += 1;
       }
+      if (
+        line.kind === "show" ||
+        line.kind === "hide" ||
+        line.kind === "scene" ||
+        line.kind === "play_music" ||
+        line.kind === "play_sound" ||
+        line.kind === "play_ambient"
+      ) {
+        const base = statementBase(line);
+        const st = draftsStatement[line.id];
+        if (st !== undefined && st !== base) n += 1;
+      }
     }
     return n;
   }, [
     draftsZh,
     draftsEn,
     draftsSpeaker,
+    draftsStatement,
     index,
     structureOps,
     pendingLines,
@@ -231,24 +406,31 @@ export default function HomePage() {
     const map: Record<string, number> = {};
     if (!index) return map;
     for (const file of index.files) {
-      const visible = buildVisibleLines(
-        index.lines,
-        file,
-        deletedIds,
-        pendingLines,
-        insertOps,
+      const visible = applySwapOps(
+        buildVisibleLines(
+          index.lines,
+          file,
+          deletedIds,
+          pendingLines,
+          insertOps,
+        ),
+        swapOps.filter((s) => s.file === file),
       );
       map[file] = visible.length;
     }
     return map;
-  }, [index, deletedIds, pendingLines, insertOps]);
+  }, [index, deletedIds, pendingLines, insertOps, swapOps]);
 
   const clearDrafts = useCallback(() => {
     setDraftsZh({});
     setDraftsEn({});
     setDraftsSpeaker({});
+    setDraftsStatement({});
     setStructureOps([]);
     setPendingLines({});
+    setHistory(emptyHistory());
+    typingBurst.current = false;
+    pendingSeq.current = 0;
   }, []);
 
   const confirmDiscardIfNeeded = useCallback(() => {
@@ -334,15 +516,23 @@ export default function HomePage() {
   }, [applyIndex]);
 
   function onDraftZhChange(id: string, text: string) {
+    recordDraftHistory();
     setDraftsZh((prev) => ({ ...prev, [id]: text }));
   }
 
   function onDraftEnChange(id: string, text: string) {
+    recordDraftHistory();
     setDraftsEn((prev) => ({ ...prev, [id]: text }));
   }
 
   function onDraftSpeakerChange(id: string, speaker: string | null) {
+    recordDraftHistory();
     setDraftsSpeaker((prev) => ({ ...prev, [id]: speaker }));
+  }
+
+  function onDraftStatementChange(id: string, statement: string) {
+    recordDraftHistory();
+    setDraftsStatement((prev) => ({ ...prev, [id]: statement }));
   }
 
   function selectFile(file: string) {
@@ -366,6 +556,7 @@ export default function HomePage() {
       text: string;
       applySpeaker?: boolean;
       speaker?: string | null;
+      mode?: "say" | "statement";
     }[] = [];
     const tlEdits: {
       file: string;
@@ -375,6 +566,20 @@ export default function HomePage() {
     }[] = [];
 
     for (const line of surviving) {
+      if (isStatementKind(line.kind)) {
+        const base = statementBase(line);
+        const st = draftsStatement[line.id] ?? base;
+        if (isPendingId(line.id) || st !== base) {
+          contents.push({
+            id: line.id,
+            file: line.file,
+            text: st,
+            mode: "statement",
+          });
+        }
+        continue;
+      }
+
       const zh = draftsZh[line.id] ?? line.text;
       const zhDirty = zh !== line.text;
       const speakerDirty =
@@ -387,7 +592,7 @@ export default function HomePage() {
         ? (draftsSpeaker[line.id] ?? null)
         : line.speaker;
 
-      if (isPendingId(line.id)) {
+      if (isPendingId(line.id) && line.kind === "say") {
         contents.push({
           id: line.id,
           file: line.file,
@@ -440,6 +645,9 @@ export default function HomePage() {
     const finalOps = structureOps.filter((op) => {
       if (op.op === "insert" && deletedIds.has(op.id)) return false;
       if (op.op === "delete" && isPendingId(op.id)) return false;
+      if (op.op === "swap") {
+        if (deletedIds.has(op.a) || deletedIds.has(op.b)) return false;
+      }
       return true;
     });
 
@@ -505,22 +713,40 @@ export default function HomePage() {
 
   function handleDeleteLine(line: DialogueLine) {
     const zh = draftsZh[line.id] ?? line.text;
-    const preview = zh.length > 36 ? `${zh.slice(0, 36)}…` : zh;
+    const label =
+      line.kind === "py_call"
+        ? `$${line.callName ?? "?"}(${(line.callArgs ?? "").slice(0, 24)})`
+        : line.kind === "play_sound" ||
+            line.kind === "play_music" ||
+            line.kind === "play_ambient"
+          ? `${line.kind.replace("play_", "play ")} ${zh}`
+          : line.kind === "if" || line.kind === "elif" || line.kind === "else"
+            ? `${line.kind} ${zh}`.trim()
+            : line.kind === "scene" ||
+                line.kind === "show" ||
+                line.kind === "hide"
+              ? `${line.kind} ${zh}`
+              : zh;
+    const preview = label.length > 48 ? `${label.slice(0, 48)}…` : label;
     if (
       !window.confirm(
-        `确定删除这句对话？（暂存，点保存后才写入文件）\n「${preview || "（空）"}」`,
+        `确定删除这一行？（暂存，点保存后才写入文件）\n「${preview || "（空）"}」`,
       )
     ) {
       return;
     }
 
     if (isPendingId(line.id)) {
+      recordStructureHistory();
       const descendants = collectInsertDescendants(line.id, structureOps);
       const removeIds = new Set([line.id, ...descendants]);
       setStructureOps((prev) =>
         prev.filter((op) => {
           if (op.op === "insert" && removeIds.has(op.id)) return false;
           if (op.op === "delete" && removeIds.has(op.id)) return false;
+          if (op.op === "swap" && (removeIds.has(op.a) || removeIds.has(op.b))) {
+            return false;
+          }
           return true;
         }),
       );
@@ -539,13 +765,27 @@ export default function HomePage() {
         for (const id of removeIds) delete next[id];
         return next;
       });
+      setDraftsStatement((prev) => {
+        const next = { ...prev };
+        for (const id of removeIds) delete next[id];
+        return next;
+      });
       return;
     }
 
+    recordStructureHistory();
     const descendants = collectInsertDescendants(line.id, structureOps);
     setStructureOps((prev) => [
       ...prev.filter(
-        (op) => !(op.op === "insert" && descendants.has(op.id)),
+        (op) =>
+          !(op.op === "insert" && descendants.has(op.id)) &&
+          !(
+            op.op === "swap" &&
+            (op.a === line.id ||
+              op.b === line.id ||
+              descendants.has(op.a) ||
+              descendants.has(op.b))
+          ),
       ),
       { op: "delete", id: line.id, file: line.file },
     ]);
@@ -556,12 +796,16 @@ export default function HomePage() {
     });
   }
 
-  function handleInsertLine(line: DialogueLine, speaker: string | null) {
+  function handleInsertLine(
+    line: DialogueLine,
+    speaker: string | null,
+  ): string | null {
     if (!line.allowInsertAfter && !isPendingId(line.id)) {
       showToast("error", "此处不可新增（menu 块内等）");
-      return;
+      return null;
     }
 
+    recordStructureHistory();
     pendingSeq.current += 1;
     const id = `pending:${pendingSeq.current}`;
     const pending: DialogueLine = {
@@ -592,18 +836,106 @@ export default function HomePage() {
         id,
         file: line.file,
         afterId: line.id,
+        insertKind: "say",
         speaker,
         text: "",
       },
     ]);
     setDraftsSpeaker((prev) => ({ ...prev, [id]: speaker }));
     setDraftsZh((prev) => ({ ...prev, [id]: "" }));
+    return id;
+  }
 
-    window.requestAnimationFrame(() => {
-      document
-        .querySelector(`[data-id="${id}"]`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
+  function canAnchorMarkerInsert(line: DialogueLine): boolean {
+    if (line.kind === "menu_caption" || line.kind === "menu_choice") {
+      return false;
+    }
+    return true;
+  }
+
+  function handleMoveLine(line: DialogueLine, direction: "up" | "down") {
+    if (!selectedFile || line.file !== selectedFile) return;
+    const visible = applySwapOps(
+      buildVisibleLines(
+        index?.lines ?? [],
+        selectedFile,
+        deletedIds,
+        pendingLines,
+        insertOps,
+      ),
+      swapOps.filter((s) => s.file === selectedFile),
+    );
+    const idx = visible.findIndex((l) => l.id === line.id);
+    if (idx < 0) return;
+    const otherIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (otherIdx < 0 || otherIdx >= visible.length) return;
+    const other = visible[otherIdx];
+    recordStructureHistory();
+    setStructureOps((prev) => [
+      ...prev,
+      { op: "swap", file: line.file, a: line.id, b: other.id },
+    ]);
+  }
+
+  function handleInsertMarker(
+    after: DialogueLine,
+    kind:
+      | "show"
+      | "hide"
+      | "scene"
+      | "play_music"
+      | "play_sound"
+      | "play_ambient",
+    statement: string,
+  ): string | null {
+    if (!canAnchorMarkerInsert(after)) {
+      showToast("error", "菜单选项处不可插入该指令");
+      return null;
+    }
+
+    recordStructureHistory();
+    pendingSeq.current += 1;
+    const id = `pending:${pendingSeq.current}`;
+    const arg = statement
+      .replace(/^(show|hide|scene)\s+/, "")
+      .replace(/^play\s+(music|sound|ambient)\s+/, "")
+      .trim();
+    const pending: DialogueLine = {
+      id,
+      file: after.file,
+      line: 0,
+      speaker: null,
+      text: arg,
+      kind,
+      label: after.label,
+      branchDepth: after.branchDepth,
+      allowInsertAfter: false,
+      callName: null,
+      callArgs: null,
+      textEn: null,
+      tlFile: null,
+      tlLine: null,
+      tlCommentLine: null,
+      tlCommentZh: null,
+      tlStale: false,
+    };
+
+    setPendingLines((prev) => ({ ...prev, [id]: pending }));
+    setStructureOps((prev) => [
+      ...prev,
+      {
+        op: "insert",
+        id,
+        file: after.file,
+        afterId: after.id,
+        insertKind: kind,
+        speaker: null,
+        text: arg,
+        statement,
+      },
+    ]);
+    setDraftsStatement((prev) => ({ ...prev, [id]: statement }));
+    return id;
   }
 
   function handleOpenPicker() {
@@ -749,16 +1081,33 @@ export default function HomePage() {
             <LineEditor
               lines={editorLines}
               characters={index?.characters ?? []}
+              sprites={index?.sprites ?? []}
+              transforms={index?.transforms ?? []}
+              transitions={index?.transitions ?? []}
+              backgrounds={index?.backgrounds ?? []}
+              bgTransforms={index?.bgTransforms ?? []}
+              bgm={index?.bgm ?? []}
+              ambient={index?.ambient ?? []}
+              sfx={index?.sfx ?? []}
+              fadeins={index?.fadeins ?? []}
               draftsZh={draftsZh}
               draftsEn={draftsEn}
               draftsSpeaker={draftsSpeaker}
+              draftsStatement={draftsStatement}
               selectedFile={selectedFile}
               busy={busy}
               onDraftZhChange={onDraftZhChange}
               onDraftEnChange={onDraftEnChange}
               onDraftSpeakerChange={onDraftSpeakerChange}
+              onDraftStatementChange={onDraftStatementChange}
               onDeleteLine={handleDeleteLine}
               onInsertLine={handleInsertLine}
+              onInsertMarker={handleInsertMarker}
+              onMoveLine={handleMoveLine}
+              canUndo={history.past.length > 0}
+              canRedo={history.future.length > 0}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
             />
           </main>
         </div>

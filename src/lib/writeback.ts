@@ -157,6 +157,31 @@ export function isEditableDialogueSourceLine(raw: string): boolean {
   return false;
 }
 
+const DOLLAR_CALL_HEAD = /^\$\s*([A-Za-z_][\w.]*)\s*\(/;
+const IF_ELIF_LINE = /^(if|elif)\s+.+:\s*(?:#.*)?$/;
+const ELSE_LINE = /^else\s*:\s*(?:#.*)?$/;
+const SCENE_LINE = /^scene\s+/;
+const SHOW_LINE = /^show\s+/;
+const HIDE_LINE = /^hide\s+/;
+const PLAY_LINE = /^play\s+(music|sound|ambient)\s+/;
+
+/**
+ * Timeline rows that may be deleted: dialogue, $ calls, scene/show/hide/play,
+ * and if/elif/else markers. Not labels / jumps / arbitrary code.
+ */
+export function isDeletableTimelineSourceLine(raw: string): boolean {
+  if (isEditableDialogueSourceLine(raw)) return true;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.startsWith("#")) return false;
+  if (DOLLAR_CALL_HEAD.test(trimmed)) return true;
+  if (IF_ELIF_LINE.test(trimmed) || ELSE_LINE.test(trimmed)) return true;
+  if (SCENE_LINE.test(trimmed) || SHOW_LINE.test(trimmed) || HIDE_LINE.test(trimmed)) {
+    return true;
+  }
+  if (PLAY_LINE.test(trimmed)) return true;
+  return false;
+}
+
 /** A normal say line (not menu choice). */
 export function isSaySourceLine(raw: string): boolean {
   const trimmed = raw.trim();
@@ -271,8 +296,8 @@ export function deleteDialogueLine(
   if (idx < 0 || idx >= lines.length) {
     throw new Error("行号超出范围");
   }
-  if (!isEditableDialogueSourceLine(lines[idx])) {
-    throw new Error("只能删除对话文本行（say / 菜单标题 / 选项）");
+  if (!isDeletableTimelineSourceLine(lines[idx])) {
+    throw new Error("只能删除时间轴上的脚本行");
   }
   lines.splice(idx, 1);
   fs.writeFileSync(abs, lines.join(nl), "utf8");
@@ -397,8 +422,8 @@ export function applyStagedSave(
             continue;
           }
           const raw = lines[idx];
-          if (!isEditableDialogueSourceLine(raw)) {
-            throw new Error(`不能删除非对话行（${op.id}）`);
+          if (!isDeletableTimelineSourceLine(raw)) {
+            throw new Error(`不能删除该行（${op.id}）`);
           }
           lines.splice(idx, 1);
           idToIdx.delete(op.id);
@@ -414,21 +439,45 @@ export function applyStagedSave(
             throw new Error(`新增锚点不存在：${op.afterId}`);
           }
           const anchor = lines[afterIdx];
-          if (!isSaySourceLine(anchor) && !isPendingId(op.afterId)) {
-            // After a pending insert, line is always say we created
-            if (!isSaySourceLine(anchor)) {
-              throw new Error("只能在对话 say 行后新增");
+          const insertKind = op.insertKind ?? "say";
+          if (!isPendingId(op.afterId)) {
+            if (isInsideMenuBlock(lines, afterIdx)) {
+              throw new Error("menu 块内不能插入");
+            }
+            const okAnchor =
+              insertKind === "say"
+                ? isSaySourceLine(anchor)
+                : isSaySourceLine(anchor) ||
+                  isDeletableTimelineSourceLine(anchor);
+            if (!okAnchor) {
+              throw new Error(
+                insertKind === "say"
+                  ? "只能在对话 say 行后新增文本"
+                  : "只能在时间轴条目后插入指令",
+              );
             }
           }
-          if (!isPendingId(op.afterId) && isInsideMenuBlock(lines, afterIdx)) {
-            throw new Error("menu 块内不能插入对话");
-          }
           const indent = anchor.match(/^\s*/)?.[0] ?? "    ";
-          const newLine = formatSayLine(indent, op.speaker, op.text);
+          const newLine =
+            insertKind === "say"
+              ? formatSayLine(indent, op.speaker, op.text)
+              : `${indent}${(op.statement ?? `${insertKind.replace("play_", "play ")} ${op.text}`).trim()}`;
           const newIdx = afterIdx + 1;
           lines.splice(newIdx, 0, newLine);
           shiftIdsAfter(idToIdx, newIdx, 1);
           idToIdx.set(op.id, newIdx);
+          mutated = true;
+        } else if (op.op === "swap") {
+          const idxA = idToIdx.get(op.a);
+          const idxB = idToIdx.get(op.b);
+          if (idxA === undefined || idxB === undefined) {
+            throw new Error(`换位条目不存在：${op.a} / ${op.b}`);
+          }
+          const tmp = lines[idxA];
+          lines[idxA] = lines[idxB];
+          lines[idxB] = tmp;
+          idToIdx.set(op.a, idxB);
+          idToIdx.set(op.b, idxA);
           mutated = true;
         }
       } catch (err) {
@@ -443,7 +492,14 @@ export function applyStagedSave(
       const idx = idToIdx.get(c.id);
       if (idx === undefined) continue;
       try {
-        if (isPendingId(c.id) || c.applySpeaker) {
+        if (c.mode === "statement") {
+          const indent = lines[idx].match(/^\s*/)?.[0] ?? "";
+          const body = c.text.trim();
+          if (!/^(show|hide|scene|play)\s+/.test(body)) {
+            throw new Error("语句必须以 show/hide/scene/play 开头");
+          }
+          lines[idx] = `${indent}${body}`;
+        } else if (isPendingId(c.id) || c.applySpeaker) {
           lines[idx] = rewriteSayLine(
             lines[idx],
             c.text,

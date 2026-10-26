@@ -77,6 +77,16 @@ export type CharacterRef = {
   note: string | null;
 };
 
+export type SpriteTagInfo = {
+  tag: string;
+  attrs: string[];
+};
+
+export type MediaOption = {
+  name: string;
+  note: string | null;
+};
+
 export type ProjectIndex = {
   gameRoot: string;
   files: string[];
@@ -88,6 +98,24 @@ export type ProjectIndex = {
   reachable: string[];
   /** Characters from define Character / aliases */
   characters: CharacterRef[];
+  /** Sprite image tags + expression attrs from image defs */
+  sprites: SpriteTagInfo[];
+  /** sprite_* / shake transforms for at-lists */
+  transforms: string[];
+  /** Common with-transitions */
+  transitions: string[];
+  /** Background images for scene (e.g. bg bedroom) */
+  backgrounds: MediaOption[];
+  /** bg_* transforms for scene at-list */
+  bgTransforms: string[];
+  /** audio.bgm_* */
+  bgm: MediaOption[];
+  /** audio.sfx_* — typically ambient */
+  ambient: MediaOption[];
+  /** audio.snd_* — typically play sound */
+  sfx: MediaOption[];
+  /** Common fadein values for play */
+  fadeins: string[];
   /** Active translation language folder under tl/ */
   tlLang: string | null;
   /** How many source lines have EN pairs */
@@ -125,8 +153,26 @@ export type StagedStructureOp =
       id: string;
       file: string;
       afterId: string;
+      /** Default say; others use statement */
+      insertKind?:
+        | "say"
+        | "show"
+        | "hide"
+        | "scene"
+        | "play_music"
+        | "play_sound"
+        | "play_ambient";
       speaker: string | null;
       text: string;
+      /** Full statement without indent, e.g. `show lz at sprite_left` */
+      statement?: string;
+    }
+  | {
+      /** Swap two timeline rows (physical source lines) */
+      op: "swap";
+      file: string;
+      a: string;
+      b: string;
     };
 
 export type LineAnchor = {
@@ -141,6 +187,8 @@ export type StagedContent = {
   text: string;
   applySpeaker?: boolean;
   speaker?: string | null;
+  /** Rewrite whole statement line (keep indent); text is full `show …` / `hide …` */
+  mode?: "say" | "statement";
 };
 
 export type StagedSaveBody = {

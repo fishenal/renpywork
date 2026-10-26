@@ -10,6 +10,18 @@ import type {
 } from "../types";
 import { scanAssets } from "./assets";
 import { computeReachable } from "./graph";
+import {
+  bgTransforms,
+  buildAudioOptions,
+  buildBackgroundOptions,
+  defaultFadeins,
+} from "../media";
+import { collectSpriteTransforms } from "../sprite-scan";
+import {
+  buildSpriteCatalog,
+  defaultTransitions,
+  spritePositionTransforms,
+} from "../sprite";
 import { buildTlIndex } from "./tl";
 
 const SAY_WITH_SPEAKER =
@@ -754,7 +766,18 @@ export function scanProject(gameRoot: string): ProjectIndex {
     : [];
 
   const { paired, lang } = attachTranslations(lines, gameRoot);
-  const characters = collectCharacters(gameRoot);
+  const assets = scanAssets(gameRoot);
+  const characters = collectCharacters(assets);
+  const sprites = buildSpriteCatalog(assets.items);
+  const allTransforms = collectSpriteTransforms(gameRoot);
+  const transforms = spritePositionTransforms(allTransforms);
+  const transitions = defaultTransitions();
+  const backgrounds = buildBackgroundOptions(assets.items);
+  const bgXforms = bgTransforms(allTransforms);
+  const bgm = buildAudioOptions(assets.items, "bgm");
+  const ambient = buildAudioOptions(assets.items, "sfx");
+  const sfx = buildAudioOptions(assets.items, "snd");
+  const fadeins = defaultFadeins();
 
   return {
     gameRoot,
@@ -765,13 +788,23 @@ export function scanProject(gameRoot: string): ProjectIndex {
     edges,
     reachable,
     characters,
+    sprites,
+    transforms,
+    transitions,
+    backgrounds,
+    bgTransforms: bgXforms,
+    bgm,
+    ambient,
+    sfx,
+    fadeins,
     tlLang: lang,
     tlPairedCount: paired,
   };
 }
 
-function collectCharacters(gameRoot: string): CharacterRef[] {
-  const assets = scanAssets(gameRoot);
+function collectCharacters(
+  assets: ReturnType<typeof scanAssets>,
+): CharacterRef[] {
   const byName = new Map<string, CharacterRef>();
   for (const item of assets.items) {
     if (item.kind !== "character") continue;

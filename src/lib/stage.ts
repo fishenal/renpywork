@@ -68,3 +68,21 @@ export function buildVisibleLines(
 
   return out;
 }
+
+/** Apply chronological swap ops to a visible line list (same file). */
+export function applySwapOps(
+  lines: DialogueLine[],
+  swaps: Extract<StagedStructureOp, { op: "swap" }>[],
+): DialogueLine[] {
+  if (swaps.length === 0) return lines;
+  const arr = [...lines];
+  for (const swap of swaps) {
+    const i = arr.findIndex((l) => l.id === swap.a);
+    const j = arr.findIndex((l) => l.id === swap.b);
+    if (i < 0 || j < 0) continue;
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
